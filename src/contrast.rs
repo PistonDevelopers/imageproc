@@ -165,6 +165,9 @@ pub fn equalize_histogram_mut(image: &mut GrayImage) {
     let total = hist[255] as f32;
 
     image.par_iter_mut().for_each(|p| {
+        // UNSAFE JUSTIFICATION:
+        //  - bench_equalize_histogram_mut shows a ~10% regression from using checked indexing here.
+        //  - correct because each channel of hist has length 256, and GrayImage has 8 bits per pixel.
         let fraction = unsafe { *hist.get_unchecked(*p as usize) as f32 / total };
         *p = (f32::min(255f32, 255f32 * fraction)) as u8;
     });
