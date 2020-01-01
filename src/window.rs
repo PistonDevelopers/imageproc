@@ -1,242 +1,165 @@
-//! Displays an image in a window created by sdl2.
+//! TODO: Doc
+#![allow(missing_docs)]
+use image::GenericImageView;
+use image::{ImageBuffer, Pixel};
+use itertools::{Itertools, Product};
+use std::ops::{Deref, Range};
 
-use image::{imageops::resize, RgbaImage};
-use sdl2::{
-    event::{Event, WindowEvent},
-    keyboard::Keycode,
-    pixels::{Color, PixelFormatEnum},
-    rect::Rect,
-    render::{Canvas, TextureCreator, WindowCanvas},
-    surface::Surface,
-    video::{Window, WindowContext},
-};
-
-/// Displays the provided RGBA image in a new window.
-///
-/// The minimum window width or height is 150 pixels - input values less than this
-/// will be rounded up to the minimum.
-pub fn display_image(title: &str, image: &RgbaImage, window_width: u32, window_height: u32) {
-    display_multiple_images(title, &vec![image], window_width, window_height);
+pub struct Window<I, P> {
+    pub image: I,
+    pub xoffset: i32,
+    pub yoffset: i32,
+    pub xstride: u32,
+    pub ystride: u32,
+    pub pad_option: PadOption<P>,
 }
 
-/// Displays the provided RGBA images in new windows.
-///
-/// The minimum window width or height is 150 pixels - input values less than this
-/// will be rounded up to the minimum.
-pub fn display_multiple_images(
-    title: &str,
-    images: &[&RgbaImage],
-    window_width: u32,
-    window_height: u32,
-) {
-    if images.len() == 0 {
-        return;
+type DerefPixel<I> = <<I as Deref>::Target as GenericImageView>::Pixel;
+
+impl<I> Window<I, DerefPixel<I>>
+where
+    I: Deref,
+    I::Target: GenericImageView + Sized,
+{
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.xstride, self.ystride)
     }
 
-    // Enforce minimum window size
-    const MIN_WINDOW_DIMENSION: u32 = 150;
-    let window_width = window_width.max(MIN_WINDOW_DIMENSION);
-    let window_height = window_height.max(MIN_WINDOW_DIMENSION);
+    pub fn get_pixel(&self, x: u32, y: u32) -> DerefPixel<I> {
+        use PadOption::*;
+        let (width, height) = self.image.dimensions();
+        let (width, height) = (width as i32, height as i32);
+        let (x, y) = (x as i32 + self.xoffset, y as i32 + self.yoffset);
 
-    // Initialise sdl2 window
-    let sdl = sdl2::init().expect("couldn't create sdl2 context");
-    let video_subsystem = sdl.video().expect("couldn't create video subsystem");
-
-    let mut windows: Vec<Window> = Vec::with_capacity(images.len());
-    let mut window_visibility: Vec<bool> = Vec::with_capacity(images.len());
-    for _ in 0..images.len() {
-        let mut window = video_subsystem
-            .window(title, window_width, window_height)
-            .resizable()
-            .allow_highdpi()
-            .build()
-            .expect("couldn't create window");
-
-        window
-            .set_minimum_size(MIN_WINDOW_DIMENSION, MIN_WINDOW_DIMENSION)
-            .expect("invalid minimum size for window");
-
-        windows.push(window);
-        window_visibility.push(true);
-    }
-
-    {
-        use sdl2::video::WindowPos::Positioned;
-
-        let (base_position_x, base_position_y) = windows[0].position();
-        for (i, window) in windows.iter_mut().enumerate() {
-            let multiplier = 1.0 + i as f32 / 20.0;
-            window.set_position(
-                Positioned((base_position_x as f32 * multiplier) as i32),
-                Positioned(base_position_y),
-            );
-
-            let (window_pos_x, _window_pos_y) = window.position();
-            let display_bounds = video_subsystem
-                .display_bounds(0)
-                .expect("No bounds found for that display.");
-            let screen_width = display_bounds.w;
-            if window_pos_x + window_width as i32 > screen_width {
-                window.set_position(
-                    Positioned(screen_width - window_width as i32),
-                    Positioned(base_position_y),
-                );
+        // TODO: check transformed `x`, `y` in bound
+        match self.pad_option {
+            Symmetric => {
+                let x = clamp(x, -x, width * 2 - 2 - x) as u32;
+                let y = clamp(y, -y, height * 2 - 2 - y) as u32;
+                self.image.get_pixel(x, y)
+            }
+            Replicate => {
+                let x = clamp(x, 0, width - 1) as u32;
+                let y = clamp(y, 0, height - 1) as u32;
+                self.image.get_pixel(x, y)
+            }
+            Circular => {
+                let x = ((x + width) % width) as u32;
+                let y = ((y + height) % height) as u32;
+                self.image.get_pixel(x, y)
+            }
+            Constant(p) => {
+                if x < 0 || x >= width || y < 0 || y >= height {
+                    p
+                } else {
+                    self.image.get_pixel(x as u32, y as u32)
+                }
             }
         }
     }
+}
 
-    let mut canvases: Vec<WindowCanvas> = Vec::with_capacity(images.len());
-    for window in windows.into_iter() {
-        let canvas = window
-            .into_canvas()
-            .software()
-            .build()
-            .expect("couldn't create canvas");
-        canvases.push(canvas);
+fn clamp<T: std::cmp::Ord>(v: T, lo: T, hi: T) -> T {
+    if v < lo {
+        lo
+    } else if hi < v {
+        hi
+    } else {
+        v
     }
+}
 
-    let mut texture_creators: Vec<TextureCreator<WindowContext>> = Vec::with_capacity(images.len());
-    for canvas in canvases.iter() {
-        let texture_creator = canvas.texture_creator();
-        texture_creators.push(texture_creator);
+#[derive(Debug, Copy, Clone)]
+pub enum PadOption<P> {
+    Symmetric,
+    Replicate,
+    Circular,
+    Constant(P),
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum SizeOption {
+    Same,
+    Full,
+    Valid,
+}
+
+pub struct WindowIter<I, P> {
+    image: I,
+    width: u32,
+    height: u32,
+    pad_option: PadOption<P>,
+    offset_iter: Product<Range<i32>, Range<i32>>,
+}
+
+impl<I: Copy, P: Pixel> Iterator for WindowIter<I, P> {
+    type Item = Window<I, P>;
+    fn next(&mut self) -> Option<Window<I, P>> {
+        if let Some((xoffset, yoffset)) = self.offset_iter.next() {
+            Some(Window {
+                image: self.image,
+                xoffset,
+                yoffset,
+                xstride: self.width,
+                ystride: self.height,
+                pad_option: self.pad_option,
+            })
+        } else {
+            None
+        }
     }
+}
 
-    // Shrinks input image to fit if required and renders to the sdl canvas
-    let render_image_to_canvas =
-        |image,
-         window_width,
-         window_height,
-         canvas: &mut Canvas<Window>,
-         texture_creator: &TextureCreator<WindowContext>| {
-            let scaled_image = resize_to_fit(image, window_width, window_height);
+pub trait ImageWindow<P: Pixel> {
+    fn windows(
+        &self,
+        width: u32,
+        height: u32,
+        size_option: SizeOption,
+        pad_option: PadOption<P>,
+    ) -> WindowIter<&Self, P>;
+}
 
-            let (image_width, image_height) = scaled_image.dimensions();
-            let mut buffer = scaled_image.into_raw();
-            const CHANNEL_COUNT: u32 = 4;
-            let surface = Surface::from_data(
-                &mut buffer,
-                image_width,
-                image_height,
-                image_width * CHANNEL_COUNT,
-                PixelFormatEnum::ABGR8888, // sdl2 expects bits from highest to lowest
-            )
-            .expect("couldn't create surface");
-
-            let texture = texture_creator
-                .create_texture_from_surface(surface)
-                .expect("couldn't create texture from surface");
-
-            canvas.set_draw_color(Color::RGB(255, 255, 255));
-            canvas.clear();
-
-            let left = ((window_width - image_width) as f32 / 2f32) as i32;
-            let top = ((window_height - image_height) as f32 / 2f32) as i32;
-            canvas
-                .copy(
-                    &texture,
-                    None,
-                    Rect::new(left, top, image_width, image_height),
-                )
-                .unwrap();
-            canvas.present();
+impl<P, C> ImageWindow<P> for ImageBuffer<P, C>
+where
+    P: Pixel + 'static,
+    C: Deref<Target = [P::Subpixel]> + Deref,
+    P::Subpixel: 'static,
+{
+    fn windows(
+        &self,
+        width: u32,
+        height: u32,
+        size_option: SizeOption,
+        pad_option: PadOption<P>,
+    ) -> WindowIter<&Self, P> {
+        use SizeOption::*;
+        let (image_width, image_height) = self.dimensions();
+        let (image_width, image_height) = (image_width as i32, image_height as i32);
+        let (width, height) = (width as i32, height as i32);
+        let offset_iter = match size_option {
+            Valid => {
+                let xrange = 0..(image_width - width + 1);
+                let yrange = 0..(image_height - height + 1);
+                Itertools::cartesian_product(yrange, xrange)
+            }
+            Full => {
+                let xrange = (-width + 1)..image_width;
+                let yrange = (-height + 1)..image_height;
+                Itertools::cartesian_product(yrange, xrange)
+            }
+            Same => {
+                let xrange = (-(width - 1) / 2)..(image_width - (width - 1) / 2);
+                let yrange = (-(height - 1) / 2)..(image_height - (height - 1) / 2);
+                Itertools::cartesian_product(yrange, xrange)
+            }
         };
-
-    for (i, (canvas, texture_creator)) in
-        canvases.iter_mut().zip(texture_creators.iter()).enumerate()
-    {
-        render_image_to_canvas(
-            images[i],
-            window_width,
-            window_height,
-            canvas,
-            texture_creator,
-        );
-    }
-
-    let mut hidden_count = 0;
-
-    // Create and start event loop to keep window open until Esc
-    let mut event_pump = sdl.event_pump().unwrap();
-    event_pump.enable_event(sdl2::event::EventType::Window);
-    'running: loop {
-        for event in event_pump.poll_iter() {
-            match event {
-                Event::Quit { .. }
-                | Event::KeyDown {
-                    keycode: Some(Keycode::Escape),
-                    ..
-                } => break 'running,
-                Event::KeyDown {
-                    keycode: Some(Keycode::Q),
-                    window_id,
-                    ..
-                } => {
-                    for (i, canvas) in canvases.iter_mut().enumerate() {
-                        if window_id == canvas.window().id() {
-                            canvas.window_mut().hide();
-                            window_visibility[i] = false;
-                            hidden_count += 1;
-                        }
-                        if hidden_count == images.len() {
-                            break 'running;
-                        }
-                    }
-                }
-                Event::Window {
-                    win_event: WindowEvent::Close,
-                    window_id,
-                    ..
-                } => {
-                    for (i, canvas) in canvases.iter_mut().enumerate() {
-                        if window_id == canvas.window().id() {
-                            canvas.window_mut().hide();
-                            window_visibility[i] = false;
-                            hidden_count += 1;
-                        }
-                        if hidden_count == images.len() {
-                            break 'running;
-                        }
-                    }
-                }
-                Event::Window {
-                    win_event: WindowEvent::Resized(w, h),
-                    window_id,
-                    ..
-                } => {
-                    for (i, (canvas, texture_creator)) in
-                        canvases.iter_mut().zip(texture_creators.iter()).enumerate()
-                    {
-                        if window_id == canvas.window().id() {
-                            render_image_to_canvas(
-                                images[i],
-                                w as u32,
-                                h as u32,
-                                canvas,
-                                texture_creator,
-                            );
-                        }
-                    }
-                }
-                _ => {}
-            }
+        WindowIter {
+            image: self,
+            width: width as u32,
+            height: height as u32,
+            pad_option,
+            offset_iter,
         }
     }
-}
-
-// Scale input image down if required so that it fits within a window of the given dimensions
-fn resize_to_fit(image: &RgbaImage, window_width: u32, window_height: u32) -> RgbaImage {
-    if image.height() < window_height && image.width() < window_width {
-        return image.clone();
-    }
-
-    let scale = {
-        let width_scale = window_width as f32 / image.width() as f32;
-        let height_scale = window_height as f32 / image.height() as f32;
-        width_scale.min(height_scale)
-    };
-
-    let height = (scale * image.height() as f32) as u32;
-    let width = (scale * image.width() as f32) as u32;
-
-    resize(image, width, height, image::FilterType::Triangle)
 }

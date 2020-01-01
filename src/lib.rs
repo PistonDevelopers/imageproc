@@ -27,6 +27,8 @@ extern crate test;
 #[cfg(test)]
 #[macro_use]
 extern crate assert_approx_eq;
+#[macro_use]
+extern crate itertools;
 
 #[macro_use]
 pub mod utils;
@@ -35,6 +37,7 @@ pub mod corners;
 pub mod definitions;
 pub mod distance_transform;
 pub mod drawing;
+// pub mod edge_draw;
 pub mod edges;
 pub mod filter;
 pub mod geometric_transformations;
@@ -44,6 +47,9 @@ pub mod hog;
 pub mod hough;
 pub mod integral_image;
 pub mod local_binary_patterns;
+// pub mod lsd;
+#[cfg(feature = "gui")]
+pub mod gui;
 pub mod map;
 pub mod math;
 pub mod morphology;
@@ -58,5 +64,4 @@ pub mod stats;
 pub mod suppress;
 pub mod template_matching;
 pub mod union_find;
-#[cfg(feature = "display-window")]
 pub mod window;
