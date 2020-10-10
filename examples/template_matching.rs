@@ -98,7 +98,7 @@ fn run_match_template(
     method: MatchTemplateMethod,
 ) -> RgbImage {
     // Match the template and convert to u8 depth to display
-    let result = match_template(&image, &template, method);
+    let result = match_template(image, template, method);
     let result_scaled = convert_to_gray_image(&result);
 
     // Pad the result to the same size as the input image, to make them easier to compare

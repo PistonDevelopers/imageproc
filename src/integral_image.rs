@@ -4,7 +4,7 @@
 use crate::definitions::Image;
 use crate::map::{ChannelMap, WithChannel};
 use image::{GenericImageView, GrayImage, Luma, Pixel, Primitive, Rgb, Rgba};
-use std::ops::AddAssign;
+use num::traits::*;
 
 /// Computes the 2d running sum of an image. Channels are summed independently.
 ///
@@ -49,8 +49,9 @@ use std::ops::AddAssign;
 /// ```
 pub fn integral_image<P, T>(image: &Image<P>) -> Image<ChannelMap<P, T>>
 where
-    P: Pixel<Subpixel = u8> + WithChannel<T> + 'static,
-    T: From<u8> + Primitive + AddAssign + 'static,
+    P: Pixel + WithChannel<T> + 'static,
+    P::Subpixel: NumCast,
+    T: NumAssign + 'static + Primitive,
 {
     integral_image_impl(image, false)
 }
@@ -88,8 +89,9 @@ where
 /// ```
 pub fn integral_squared_image<P, T>(image: &Image<P>) -> Image<ChannelMap<P, T>>
 where
-    P: Pixel<Subpixel = u8> + WithChannel<T> + 'static,
-    T: From<u8> + Primitive + AddAssign + 'static,
+    P: Pixel + WithChannel<T> + 'static,
+    P::Subpixel: NumCast,
+    T: NumAssign + 'static + Primitive,
 {
     integral_image_impl(image, true)
 }
@@ -97,8 +99,9 @@ where
 /// Implementation of `integral_image` and `integral_squared_image`.
 fn integral_image_impl<P, T>(image: &Image<P>, square: bool) -> Image<ChannelMap<P, T>>
 where
-    P: Pixel<Subpixel = u8> + WithChannel<T> + 'static,
-    T: From<u8> + Primitive + AddAssign + 'static,
+    P: Pixel + WithChannel<T> + 'static,
+    P::Subpixel: NumCast,
+    T: NumAssign + 'static + Primitive,
 {
     // TODO: Make faster, add a new IntegralImage type
     // TODO: to make it harder to make off-by-one errors when computing sums of regions.
@@ -123,7 +126,7 @@ where
             //      x and y are within bounds by definition of in_width and in_height
             let input = unsafe { image.unsafe_get_pixel(x, y) };
             for (s, c) in sum.iter_mut().zip(input.channels()) {
-                let pix: T = (*c).into();
+                let pix: T = T::from(*c).unwrap();
                 *s += if square { pix * pix } else { pix };
             }
 
@@ -161,6 +164,9 @@ pub trait ArrayData {
 
     /// Subtract the elements of two data arrays elementwise.
     fn sub(lhs: Self::DataType, other: Self::DataType) -> Self::DataType;
+
+    /// Convert DataType back into Pixel
+    fn data_to_pixel(data: Self::DataType) -> Self;
 }
 
 impl<T: Primitive + 'static> ArrayData for Luma<T> {
@@ -177,6 +183,10 @@ impl<T: Primitive + 'static> ArrayData for Luma<T> {
     fn sub(lhs: Self::DataType, rhs: Self::DataType) -> Self::DataType {
         [lhs[0] - rhs[0]]
     }
+
+    fn data_to_pixel(data: Self::DataType) -> Self {
+        Self { 0: data }
+    }
 }
 
 impl<T: Primitive + 'static> ArrayData for Rgb<T> {
@@ -192,6 +202,10 @@ impl<T: Primitive + 'static> ArrayData for Rgb<T> {
 
     fn sub(lhs: Self::DataType, rhs: Self::DataType) -> Self::DataType {
         [lhs[0] - rhs[0], lhs[1] - rhs[1], lhs[2] - rhs[2]]
+    }
+
+    fn data_to_pixel(data: Self::DataType) -> Self {
+        Self { 0: data }
     }
 }
 
@@ -224,6 +238,10 @@ impl<T: Primitive + 'static> ArrayData for Rgba<T> {
             lhs[3] - rhs[3],
         ]
     }
+
+    fn data_to_pixel(data: Self::DataType) -> Self {
+        Self { 0: data }
+    }
 }
 
 /// Sums the pixels in positions [left, right] * [top, bottom] in F, where `integral_image` is the
@@ -231,8 +249,8 @@ impl<T: Primitive + 'static> ArrayData for Rgba<T> {
 ///
 /// The of `ArrayData` here is due to lack of const generics. This library contains
 /// implementations of `ArrayData` for `Luma`, `Rgb` and `Rgba` for any element type `T` that
-/// implements `Primitive`. In that case, this function returns `[T; 1]` for an image
-/// whose pixels are of type `Luma`, `[T; 3]` for `Rgb` pixels and `[T; 4]` for `Rgba` pixels.
+/// implements `Primitive`. In that case, this function returns `vec![T; 1]` for an image
+/// whose pixels are of type `Luma`, `vec![T; 3]` for `Rgb` pixels and `vec![T; 4]` for `Rgba` pixels.
 ///
 /// See the [`integral_image`](fn.integral_image.html) documentation for examples.
 pub fn sum_image_pixels<P>(
@@ -241,7 +259,7 @@ pub fn sum_image_pixels<P>(
     top: u32,
     right: u32,
     bottom: u32,
-) -> P::DataType
+) -> Vec<P::Subpixel>
 where
     P: Pixel + ArrayData + Copy + 'static,
 {
@@ -253,7 +271,10 @@ where
         integral_image.get_pixel(right + 1, top).data(),
         integral_image.get_pixel(left, bottom + 1).data(),
     );
-    P::sub(P::sub(P::add(a, b), c), d)
+
+    P::data_to_pixel(P::sub(P::sub(P::add(a, b), c), d))
+        .channels()
+        .to_vec()
 }
 
 /// Computes the variance of [left, right] * [top, bottom] in F, where `integral_image` is the
