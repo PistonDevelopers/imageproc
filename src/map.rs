@@ -113,6 +113,53 @@ where
     out
 }
 
+/// Applies `f` to each subpixel of the input image in place.
+///
+/// # Examples
+/// ```
+/// # extern crate image;
+/// # #[macro_use]
+/// # extern crate imageproc;
+/// # fn main() {
+/// use imageproc::map::map_subpixels_mut;
+///
+/// let mut image = gray_image!(
+///     1, 2;
+///     3, 4);
+///
+/// let want = gray_image!(
+///     2, 4;
+///     6, 8);
+///
+/// map_subpixels_mut(&mut image, |x| 2 * x);
+///
+/// assert_pixels_eq!(
+///     image,
+///     want);
+/// # }
+/// ```
+pub fn map_subpixels_mut<I, P, F>(image: &mut I, f: F)
+where
+    I: GenericImage<Pixel = P>,
+    P: Pixel,
+    F: Fn(P::Subpixel) -> P::Subpixel,
+{
+    let (width, height) = image.dimensions();
+
+    for y in 0..height {
+        for x in 0..width {
+            for c in 0..P::CHANNEL_COUNT {
+                image.get_pixel_mut(x, y).channels_mut()[c as usize] = f(unsafe {
+                    *image
+                        .unsafe_get_pixel(x, y)
+                        .channels()
+                        .get_unchecked(c as usize)
+                });
+            }
+        }
+    }
+}
+
 /// Applies `f` to the color of each pixel in the input image.
 ///
 /// # Examples
@@ -157,6 +204,50 @@ where
     }
 
     out
+}
+
+/// Applies `f` to the color of each pixel in the input image in place.
+///
+/// # Examples
+/// ```
+/// # extern crate image;
+/// # #[macro_use]
+/// # extern crate imageproc;
+/// # fn main() {
+/// use image::Luma;
+/// use imageproc::map::map_colors_mut;
+///
+/// let mut image = gray_image!(
+///     1, 2;
+///     3, 4);
+///
+/// let want = gray_image!(
+///     2, 4;
+///     6, 8);
+///
+/// map_colors_mut(&mut image, |p| Luma([2 * p[0]]));
+///
+/// assert_pixels_eq!(
+///     image,
+///     want);
+/// # }
+/// ```
+pub fn map_colors_mut<I, P, F>(image: &mut I, f: F)
+where
+    I: GenericImage<Pixel = P>,
+    P: Pixel,
+    F: Fn(P) -> P,
+{
+    let (width, height) = image.dimensions();
+
+    for y in 0..height {
+        for x in 0..width {
+            unsafe {
+                let pix = image.unsafe_get_pixel(x, y);
+                image.unsafe_put_pixel(x, y, f(pix));
+            }
+        }
+    }
 }
 
 /// Applies `f` to the colors of the pixels in the input images.
@@ -265,6 +356,52 @@ where
     }
 
     out
+}
+
+/// Applies `f` to each pixel in the input image in place.
+///
+/// # Examples
+/// ```
+/// # extern crate image;
+/// # #[macro_use]
+/// # extern crate imageproc;
+/// # fn main() {
+/// use image::Luma;
+/// use imageproc::map::map_pixels_mut;
+///
+/// let mut image = gray_image!(
+///     1, 2;
+///     3, 4);
+///
+/// let want = gray_image!(
+///     1, 3;
+///     4, 6);
+///
+/// map_pixels_mut(&mut image, |x, y, p| {
+///     Luma([p[0] + x as u8 + y as u8])
+/// });
+///
+/// assert_pixels_eq!(
+///     image,
+///     want);
+/// # }
+/// ```
+pub fn map_pixels_mut<I, P, F>(image: &mut I, f: F)
+where
+    I: GenericImage<Pixel = P>,
+    P: Pixel,
+    F: Fn(u32, u32, P) -> P,
+{
+    let (width, height) = image.dimensions();
+
+    for y in 0..height {
+        for x in 0..width {
+            unsafe {
+                let pix = image.unsafe_get_pixel(x, y);
+                image.unsafe_put_pixel(x, y, f(x, y, pix));
+            }
+        }
+    }
 }
 
 /// Creates a grayscale image by extracting the red channel of an RGB image.
