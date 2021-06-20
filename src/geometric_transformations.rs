@@ -130,7 +130,8 @@ impl Projection {
 
     /// Calculates a projection from a set of four control point pairs.
     pub fn from_control_points(from: [(f32, f32); 4], to: [(f32, f32); 4]) -> Option<Projection> {
-        use rulinalg::matrix::*;
+        use approx::AbsDiffEq;
+        use nalgebra::{linalg::SVD, OMatrix, OVector, U8};
 
         let (xf1, yf1, xf2, yf2, xf3, yf3, xf4, yf4) = (
             from[0].0 as f64,
@@ -155,52 +156,43 @@ impl Projection {
         );
 
         #[rustfmt::skip]
-        let a = Matrix::new(
-            9,
-            9,
-            vec![
-                0.0, 0.0, 0.0, -xf1, -yf1, -1.0, y1 * xf1, y1 * yf1, y1,
-                xf1, yf1, 1.0, 0.0, 0.0, 0.0, -x1 * xf1, -x1 * yf1, -x1,
-                0.0, 0.0, 0.0, -xf2, -yf2, -1.0, y2 * xf2, y2 * yf2, y2,
-                xf2, yf2, 1.0, 0.0, 0.0, 0.0, -x2 * xf2, -x2 * yf2, -x2,
-                0.0, 0.0, 0.0, -xf3, -yf3, -1.0, y3 * xf3, y3 * yf3, y3,
-                xf3, yf3, 1.0, 0.0, 0.0, 0.0, -x3 * xf3, -x3 * yf3, -x3,
-                0.0, 0.0, 0.0, -xf4, -yf4, -1.0, y4 * xf4, y4 * yf4, y4,
-                xf4, yf4, 1.0, 0.0, 0.0, 0.0, -x4 * xf4, -x4 * yf4, -x4,
-                xf4, yf4, 1.0, 0.0, 0.0, 0.0, -x4 * xf4, -x4 * yf4, -x4,
-            ],
-        );
+        let a = OMatrix::<_, U8, U8>::from_row_slice(&[
+            0.0, 0.0, 0.0, -xf1, -yf1, -1.0,  y1 * xf1,  y1 * yf1,
+            xf1, yf1, 1.0,  0.0,  0.0,  0.0, -x1 * xf1, -x1 * yf1,
+            0.0, 0.0, 0.0, -xf2, -yf2, -1.0,  y2 * xf2,  y2 * yf2,
+            xf2, yf2, 1.0,  0.0,  0.0,  0.0, -x2 * xf2, -x2 * yf2,
+            0.0, 0.0, 0.0, -xf3, -yf3, -1.0,  y3 * xf3,  y3 * yf3,
+            xf3, yf3, 1.0,  0.0,  0.0,  0.0, -x3 * xf3, -x3 * yf3,
+            0.0, 0.0, 0.0, -xf4, -yf4, -1.0,  y4 * xf4,  y4 * yf4,
+            xf4, yf4, 1.0,  0.0,  0.0,  0.0, -x4 * xf4, -x4 * yf4,
+        ]);
 
-        match a.svd() {
-            Err(_) => None,
-            Ok((s, _, v)) => {
-                // rank(a) must be 8, but not 7
-                if s[[8, 8]].abs() > 0.01 || s[[7, 7]].abs() < 0.01 {
-                    None
-                } else {
-                    let h = v.col(8).into_matrix().into_vec();
-                    let mut transform = [
-                        h[0] as f32,
-                        h[1] as f32,
-                        h[2] as f32,
-                        h[3] as f32,
-                        h[4] as f32,
-                        h[5] as f32,
-                        h[6] as f32,
-                        h[7] as f32,
-                        h[8] as f32,
-                    ];
-                    transform = normalize(transform);
-                    let class = class_from_matrix(transform);
+        let b = OVector::<_, U8>::from_row_slice(&[-y1, x1, -y2, x2, -y3, x3, -y4, x4]);
 
-                    try_inverse(&transform).map(|inverse| Projection {
-                        transform,
-                        inverse,
-                        class,
-                    })
-                }
-            }
-        }
+        SVD::try_new(a, true, true, f64::default_epsilon(), 0)
+            .and_then(|svd| svd.solve(&b, f64::default_epsilon()).ok())
+            .and_then(|h| {
+                let mut transform = [
+                    h[0] as f32,
+                    h[1] as f32,
+                    h[2] as f32,
+                    h[3] as f32,
+                    h[4] as f32,
+                    h[5] as f32,
+                    h[6] as f32,
+                    h[7] as f32,
+                    1.0,
+                ];
+
+                transform = normalize(transform);
+                let class = class_from_matrix(transform);
+
+                try_inverse(&transform).map(|inverse| Projection {
+                    transform,
+                    inverse,
+                    class,
+                })
+            })
     }
 
     // Helper functions used as optimization in warp.
@@ -1132,6 +1124,34 @@ mod tests {
     }
 
     #[test]
+    fn test_from_control_points_2() {
+        let from = [
+            (67.24537, 427.96024),
+            (65.51512, 67.96736),
+            (569.6426, 62.33165),
+            (584.4605, 425.33667),
+        ];
+        let to = [(0.0, 0.0), (640.0, 0.0), (640.0, 480.0), (0.0, 480.0)];
+
+        let p = Projection::from_control_points(from, to);
+        assert!(p.is_some());
+    }
+
+    #[test]
+    /// Test case from https://github.com/image-rs/imageproc/issues/412
+    fn test_from_control_points_nofreeze() {
+        let from = [
+            (0.0, 0.0),
+            (250.0, 17.481735),
+            (7.257017, 82.94814),
+            (250.0, 104.18543),
+        ];
+        let to = [(0.0, 0.0), (249.0, 0.0), (0.0, 105.0), (249.0, 105.0)];
+
+        Projection::from_control_points(from, to);
+    }
+
+    #[test]
     fn test_from_control_points_known_transform() {
         let t = Projection::translate(10f32, 10f32);
         let p = t * Projection::rotate(90f32.to_radians()) * t.invert();
@@ -1160,6 +1180,38 @@ mod tests {
         let p = Projection::from_control_points(from, to);
         // Should fail if 3 points are colinear
         assert!(p.is_none());
+    }
+
+    #[test]
+    fn test_from_control_points_translation() {
+        let p = Projection::translate(10f32, 15f32);
+
+        let from = [(0f32, 0.0), (50.0, 50.0), (50.0, 0.0), (0.0, 50.0)];
+        let to = [(10f32, 15.0), (60.0, 65.0), (60.0, 15.0), (10.0, 65.0)];
+
+        let p_est = Projection::from_control_points(from, to).unwrap();
+
+        for i in 0..50 {
+            for j in 0..50 {
+                let pt = (i as f32, j as f32);
+                assert_approx_eq!((p * pt).0, (p_est * pt).0, 1e-3);
+                assert_approx_eq!((p * pt).1, (p_est * pt).1, 1e-3);
+            }
+        }
+    }
+
+    #[test]
+    fn test_from_control_points_underdetermined() {
+        let from = [
+            (307.12073f32, 3.2),
+            (330.89783, 3.2),
+            (21.333334, 248.17337),
+            (21.333334, 230.34056),
+        ];
+        let to = [(0.0f32, 0.0), (3.0, 0.0), (3.0, 3.0), (0.0, 3.0)];
+
+        let p = Projection::from_control_points(from, to);
+        p.unwrap();
     }
 
     #[bench]
